@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>중간고사 스터디 플래너</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500;600&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="page">
+  <header class="topbar">
+    <div class="brand">
+      <p class="eyebrow">2026-2학기 · 중간고사 10/19 – 10/24</p>
+      <h1>스터디 플래너</h1>
+      <p class="now" id="nowText">&nbsp;</p>
+    </div>
+    <div class="dday" id="ddayBox" aria-live="polite">
+      <span class="dday-label">중간고사 10/19(월)</span>
+      <strong class="dday-num" id="ddayNum">D-</strong>
+      <span class="dday-count" id="ddayCount">&nbsp;</span>
+    </div>
+  </header>
+
+  <section class="kpis" id="kpis" aria-label="요약"></section>
+  <div id="alerts" class="alerts"></div>
+
+  <main class="layout">
+    <div class="col-main">
+      <section class="card checklist-card" aria-labelledby="dayTitle">
+        <div class="day-head">
+          <button type="button" class="icon-btn" id="prevDay" aria-label="이전 날">‹</button>
+          <div class="day-title">
+            <h2 id="dayTitle">&nbsp;</h2>
+            <span class="day-state" id="dayState"></span>
+          </div>
+          <button type="button" class="icon-btn" id="nextDay" aria-label="다음 날">›</button>
+          <button type="button" class="ghost-btn" id="gotoToday">오늘 플랜</button>
+        </div>
+        <div id="dayBanner"></div>
+        <div class="meter" id="dayMeter"></div>
+
+        <div id="checklist" class="checklist"></div>
+
+        <div class="events">
+          <div class="section-head">
+            <h3>개인 일정</h3>
+            <span class="hint">소요시간을 넣으면 그날 공부 가능시간에서 빠지고 스케줄이 다시 계산됩니다.</span>
+          </div>
+          <form id="eventForm" class="event-form" autocomplete="off">
+            <input id="evTime" type="time" aria-label="시간">
+            <input id="evText" type="text" placeholder="예) 공모전 회의" aria-label="일정 내용" required>
+            <input id="evHours" type="number" min="0" max="12" step="0.5" placeholder="소요 h" aria-label="소요시간(시간)">
+            <button type="submit" class="btn">추가</button>
+          </form>
+          <ul id="eventList" class="event-list"></ul>
+        </div>
+
+        <div class="close-bar">
+          <div class="close-info" id="closeInfo"></div>
+          <div class="close-actions">
+            <button type="button" class="ghost-btn" id="undoBtn" hidden>되돌리기</button>
+            <button type="button" class="btn-primary" id="rescheduleBtn">미완료 과목 스케줄 재배치</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card board-card" aria-labelledby="boardTitle">
+        <div class="section-head">
+          <h2 id="boardTitle">전체 스케줄</h2>
+          <div class="legend" id="legend"></div>
+        </div>
+        <div class="board-scroll">
+          <div class="board" id="board"></div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="col-side">
+      <section class="card">
+        <div class="section-head">
+          <h2>메모</h2>
+          <span class="hint" id="memoDate"></span>
+        </div>
+        <textarea id="memo" rows="4" placeholder="이 날의 메모 (예: 3시 회의 전까지 DB CH3 끝내기)"></textarea>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <h2>과목별 진도</h2>
+          <span class="hint">과목을 눌러 세부 항목 보기</span>
+        </div>
+        <div id="progress" class="progress-list"></div>
+        <form id="customForm" class="custom-form" autocomplete="off">
+          <select id="cfSubj" aria-label="과목"></select>
+          <input id="cfTitle" type="text" placeholder="학습 항목 추가 (예: 기출 풀이)" aria-label="학습 항목" required>
+          <input id="cfHours" type="number" min="0.5" max="8" step="0.5" value="1" aria-label="소요시간(시간)">
+          <button type="submit" class="btn">추가</button>
+        </form>
+      </section>
+
+      <section class="card">
+        <details id="settings" class="settings">
+          <summary>설정 · 가용시간과 규칙</summary>
+          <form id="settingsForm" class="settings-form">
+            <fieldset>
+              <legend>요일별 공부 가능시간 (h)</legend>
+              <div class="wd-grid" id="wdGrid"></div>
+            </fieldset>
+            <fieldset>
+              <legend>과목별 현장수업 요일</legend>
+              <p class="hint">지정하면 영상강의를 수업 전날까지 끝내도록 배치하고, 현장강의 복습은 수업 당일 이후에 배치합니다.</p>
+              <div class="class-grid" id="classGrid"></div>
+            </fieldset>
+            <fieldset>
+              <legend>학습 단위 · 규칙</legend>
+              <div class="rule-grid">
+                <label>영상강의 1개 <input id="sVideo" type="number" min="0.5" max="4" step="0.25"> h</label>
+                <label>현장강의 복습 <input id="sOffline" type="number" min="0.25" max="4" step="0.25"> h</label>
+                <label>전날 내용 훑어보기 (항목당) <input id="sSkim" type="number" min="0" max="1" step="0.25"> h</label>
+                <label>누적 복습 (과목당) <input id="sCum" type="number" min="0" max="3" step="0.25"> h</label>
+                <label>누적 복습 주기 <input id="sCycle" type="number" min="0" max="14" step="1"> 일</label>
+                <label>시험 1과목당 당일 차감 <input id="sPenalty" type="number" min="0" max="6" step="0.5"> h</label>
+              </div>
+            </fieldset>
+            <div class="settings-actions">
+              <button type="submit" class="btn-primary">저장하고 다시 계산</button>
+              <button type="button" class="ghost-btn danger" id="resetBtn">전체 초기화</button>
+            </div>
+            <p class="confirm" id="resetConfirm" hidden>
+              체크 기록, 일정, 메모가 모두 지워집니다.
+              <button type="button" class="btn danger-fill" id="resetYes">초기화</button>
+              <button type="button" class="ghost-btn" id="resetNo">취소</button>
+            </p>
+          </form>
+        </details>
+      </section>
+
+      <section class="card">
+        <h2>재배치 기록</h2>
+        <ol id="log" class="log"></ol>
+      </section>
+    </aside>
+  </main>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>
