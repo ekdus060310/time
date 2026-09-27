@@ -26,23 +26,23 @@
   ];
   const SUBJ = Object.fromEntries(SUBJECTS.map(s => [s.id, s]));
   const LAST_EXAM = SUBJECTS.reduce((m, s) => (s.exam > m ? s.exam : m), '');
-  const WEEKLY_VIDEO = new Set(['linux', 'sat', 'hum']); // 영상강의가 주차별로 1개씩인 과목
 
+  // [제목, 약칭, 공개 주차] — 영상은 해당 주차 월요일에 열린다
   const DM_LECTURES = [
-    ['1장. 수의 표현과 연산 (1/3)', '1장(1/3)'],
-    ['1장. 수의 표현과 연산 (2/3)', '1장(2/3)'],
-    ['1장. 수의 표현과 연산 (3/3)', '1장(3/3)'],
-    ['2장. 집합', '2장'],
-    ['3장. 논리와 명제 (1/2)', '3장(1/2)'],
-    ['3장. 논리와 명제 (2/2)', '3장(2/2)'],
-    ['4장. 관계 (1)', '4장(1)'],
-    ['4장. 관계 (2)', '4장(2)'],
-    ['5장. 함수 (1)', '5장(1)'],
-    ['5장. 함수 (2)', '5장(2)'],
-    ['6장. 증명', '6장'],
+    ['1장. 수의 표현과 연산 (1/3)', '1장(1/3)', 1],
+    ['1장. 수의 표현과 연산 (2/3)', '1장(2/3)', 2],
+    ['1장. 수의 표현과 연산 (3/3)', '1장(3/3)', 2],
+    ['2장. 집합', '2장', 3],
+    ['3장. 논리와 명제 (1/2)', '3장(1/2)', 4],
+    ['3장. 논리와 명제 (2/2)', '3장(2/2)', 4],
+    ['4장. 관계 (1)', '4장(1)', 5],
+    ['4장. 관계 (2)', '4장(2)', 5],
+    ['5장. 함수 (1)', '5장(1)', 6],
+    ['5장. 함수 (2)', '5장(2)', 6],
+    ['6장. 증명', '6장', 7],
   ];
   const DB_LECTURES = ['CH1-A', 'CH1-B', 'CH2-A', 'CH3-A', 'CH3-B', 'CH3-C', 'CH3-D', 'CH3-E', 'CH3-F',
-    'CH6-A', 'CH6-B', 'CH6-C', 'CH5-A', 'Normalization_A'];
+    'CH6-A', 'CH6-B', 'CH6-C', 'CH5-A', 'Normalization_A']; // 주차당 2개
 
   const KIND_LABEL = { video: '영상강의', offline: '현장 복습', custom: '추가 학습' };
   const VIDEO_LEN = 1.5;             // 온라인 영상 1개 재생시간(h)
@@ -86,14 +86,14 @@
     const push = (subj, stream, seq, o) => T.push({
       id: `${subj}-${stream}${seq}`, subj, stream, seq, week: null, hours: null, done: false, doneOn: null, ...o,
     });
-    DM_LECTURES.forEach(([title, short], i) => push('dm', 'v', i + 1, { kind: 'video', title: `영상강의 · ${title}`, short }));
+    DM_LECTURES.forEach(([title, short, w], i) => push('dm', 'v', i + 1, { kind: 'video', week: w, title: `${w}주차 영상강의 · ${title}`, short }));
     for (const s of ['linux', 'sat', 'hum']) {
       for (let w = 1; w <= 7; w++) {
         push(s, 'v', w, { kind: 'video', week: w, title: `${w}주차 영상강의`, short: `${w}주차 영상` });
         push(s, 'o', w, { kind: 'offline', week: w, title: `${w}주차 현장강의 복습·정리`, short: `${w}주차 현장` });
       }
     }
-    DB_LECTURES.forEach((c, i) => push('db', 'v', i + 1, { kind: 'video', title: `영상강의 · ${c}`, short: c }));
+    DB_LECTURES.forEach((c, i) => { const w = Math.floor(i / 2) + 1; push('db', 'v', i + 1, { kind: 'video', week: w, title: `${w}주차 영상강의 · ${c}`, short: c }); });
     for (let w = 1; w <= 7; w++) {
       push('db', 'o', w, { kind: 'offline', week: w, title: `${w}주차 현장강의 복습·정리`, short: `${w}주차 현장` });
     }
@@ -104,6 +104,7 @@
     const today = realToday();
     return {
       version: 2,
+      rev: 3,
       settings: structuredClone(DEFAULT_SETTINGS),
       tasks: buildTasks(),
       schedule: {},
@@ -202,7 +203,7 @@
       state = remote;
       state.settings = { ...structuredClone(DEFAULT_SETTINGS), ...state.settings };
       state.settings.classDays = { ...DEFAULT_SETTINGS.classDays, ...state.settings.classDays };
-      save(false);
+      if (normalize()) { replan(state.currentDay); save(); } else save(false);
       ui.selected = clampBoard(ui.selected || state.currentDay);
       renderSettings();
       renderAll();
@@ -240,6 +241,18 @@
       }
     },
   };
+  // 예전에 저장된 기록을 현재 강의 구성(주차·제목)에 맞춘다. 바뀐 것이 있으면 true
+  function normalize() {
+    const fresh = Object.fromEntries(buildTasks().map(t => [t.id, t]));
+    let changed = false;
+    state.tasks.forEach(t => {
+      const f = fresh[t.id];
+      if (!f) return;
+      if (t.week !== f.week || t.title !== f.title) { t.week = f.week; t.title = f.title; changed = true; }
+    });
+    if ((state.rev || 0) < 3) { state.rev = 3; changed = true; }
+    return changed;
+  }
   let uidN = 0;
   const uid = p => `${p}${Date.now().toString(36)}${(uidN++).toString(36)}`;
 
@@ -287,25 +300,11 @@
       if (classDate(s.id, 1) === null) continue;
       const vids = state.tasks.filter(t => t.subj === s.id && t.kind === 'video' && !t.done).sort((a, b) => a.seq - b.seq);
       if (!vids.length) continue;
-      if (WEEKLY_VIDEO.has(s.id)) {
-        for (const v of vids) {
-          const c = classDate(s.id, v.week);
-          if (c > start && c < s.exam) dues[v.id] = addDays(c, -1);
-        }
-      } else {
-        // 주차 매핑이 없는 강의 묶음 → 남은 수업일에 맞춰 균등하게 선행
-        const classes = [];
-        for (let w = 1; w <= 8; w++) { const c = classDate(s.id, w); if (c > start && c < s.exam) classes.push(c); }
-        const K = classes.length, N = vids.length;
-        if (!K) continue;
-        vids.forEach((v, j) => { dues[v.id] = addDays(classes[Math.ceil((j + 1) * K / N) - 1], -1); });
-      }
-      // 주차 순서대로 들어야 하므로, 뒤 강의의 마감은 앞 강의의 마감이기도 하다
-      let run = null;
-      for (let i = vids.length - 1; i >= 0; i--) {
-        const dv = dues[vids[i].id];
-        if (dv && (!run || dv < run)) run = dv;
-        if (run) dues[vids[i].id] = run;
+      // 앞으로 있을 수업의 영상강의: 수업 전날까지 (월요일 수업처럼 공개일이 수업일이면 공개 당일)
+      for (const v of vids) {
+        if (!v.week) continue;
+        const c = classDate(s.id, v.week);
+        if (c && c > start && c < s.exam) dues[v.id] = maxKey(addDays(c, -1), weekMon(v.week));
       }
     }
     return dues;
@@ -368,7 +367,7 @@
       .reduce((a, [, q]) => a + q.reduce((b, t) => b + hoursOf(t), 0), 0);
     const ready = (t, d) => {
       if (availOf(t) > d) return false;
-      if (t.kind === 'offline' && t.week && WEEKLY_VIDEO.has(t.subj)) { // 같은 주차 영상강의 먼저
+      if (t.kind === 'offline' && t.week) { // 같은 주차 영상강의를 먼저 들은 뒤 현장 복습
         const vq = streams[`${t.subj}|v`];
         if (vq && vq.length && vq[0].week <= t.week) return false;
       }
@@ -376,6 +375,13 @@
     };
 
     let lateOnEve = 0; // 시험 전날로 밀린 강의·복습 수 (총정리 시간을 잠식)
+    // 과목별 진도 페이스: 시험 전날까지 가용시간에 비례해 고르게 나눠 배치한다
+    const initRem = {}, placedH = {}, capToEve = {};
+    SUBJECTS.forEach(s => {
+      initRem[s.id] = remainingOf(s.id);
+      placedH[s.id] = 0;
+      capToEve[s.id] = Math.max(capUntil(s.id, start, addDays(s.exam, -1)), 1);
+    });
     // 지난 날에서 이월된 과제 표시용
     const carriedFrom = {};
     for (const [d, arr] of Object.entries(state.schedule)) {
@@ -442,26 +448,25 @@
 
       // (d) 새 진도 배치: 시험 임박도·마감(수업 전날)·과목 분산을 점수로 그리디 선택
       const pool = eve.length ? eve : SUBJECTS.map(s => s.id).filter(alive);
-      for (;;) {
+      // 과목을 번갈아 배치: 1차로 과목당 1개씩, 시간이 남으면 과목당 최대 2개까지 (시험 전날은 제한 없음)
+      const limits = eve.length ? [Infinity] : [1, 2];
+      for (const limit of limits) for (;;) {
         const cands = [];
         for (const [key, q] of Object.entries(streams)) {
           const subj = key.split('|')[0];
           if (!pool.includes(subj) || !q.length || !ready(q[0], d)) continue;
+          if ((today[subj]?.length || 0) >= limit) continue;
           const t = q[0];
           const due = dues[t.id];
           let score;
           if (eve.length) {
             score = 1000 - SUBJECTS.findIndex(s => s.id === subj);
-          } else if (due && due <= d) {
-            score = 500 + diffDays(due, d); // 마감이 더 지난 것부터
           } else {
-            const examEve = addDays(SUBJ[subj].exam, -1);
-            score = remainingOf(subj) / Math.max(capUntil(subj, d, examEve), 1);
-            if (due) {
-              const need = q.filter(x => dues[x.id] && dues[x.id] <= due).reduce((a, x) => a + hoursOf(x), 0);
-              score = Math.max(score, 1.5 * need / Math.max(capUntil(subj, d, addDays(due, 1)), 1));
-            }
-            score /= 1 + 0.9 * (today[subj]?.length || 0);
+            // 오늘까지 끝냈어야 할 양 - 지금까지 배치한 양 = 페이스보다 밀린 시간(h). 많이 밀린 과목부터
+            const frac = Math.min(1, capUntil(subj, start, addDays(d, 1)) / capToEve[subj]);
+            score = frac * initRem[subj] - placedH[subj];
+            if (due) score += due <= d ? 3 : 1 / Math.max(diffDays(d, due), 1); // 수업 전 마감이 가까우면 가산
+            if (t.kind === 'video') score += 0.01; // 같은 과목이면 영상강의 먼저
           }
           score -= (t.week || 0) * 1e-4;
           cands.push({ key, t, score });
@@ -473,6 +478,7 @@
         if (eve.length) lateOnEve++;
         add({ id: `t-${t.id}`, type: 'task', taskId: t.id, subj: t.subj, kind: t.kind, title: t.title, hours: hoursOf(t), due: dues[t.id] || null, from: carriedFrom[t.id] || null });
         streams[pick.key].shift();
+        placedH[t.subj] += hoursOf(t);
         (today[t.subj] ||= []).push(t);
         learned[t.subj].push(t);
         learned[t.subj].sort((a, b) => a.seq - b.seq);
@@ -1071,6 +1077,9 @@
   state = load();
   if (!state) {
     state = migrateV1() || freshState();
+    replan(state.currentDay);
+    save(false);
+  } else if (normalize()) {
     replan(state.currentDay);
     save(false);
   }
