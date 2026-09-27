@@ -7,8 +7,9 @@
  */
 (() => {
   // ---------------------------------------------------------------- 상수
-  const STORAGE_KEY = 'studyPlanner.v1';
-  const UNDO_KEY = 'studyPlanner.v1.undo';
+  const STORAGE_KEY = 'studyPlanner.v2';
+  const UNDO_KEY = 'studyPlanner.v2.undo';
+  const OLD_KEY = 'studyPlanner.v1';
   const PLAN_START = '2026-09-28';   // 계획 시작일
   const WEEK1_MON = '2026-08-31';    // 1주차 월요일 (9/1 개강 기준)
   const DDAY = '2026-10-19';         // D-Day
@@ -20,7 +21,6 @@
     { id: 'dm',    name: '이산수학',                 short: '이산수학', exam: '2026-10-19' },
     { id: 'linux', name: '리눅스시스템',             short: '리눅스',   exam: '2026-10-19' },
     { id: 'sat',   name: '위성정보 이해와 처리',     short: '위성정보', exam: '2026-10-21' },
-    { id: 'sec',   name: '융합보안 프리캡스톤 디자인', short: '융합보안', exam: '2026-10-21' },
     { id: 'db',    name: '데이터베이스',             short: 'DB',       exam: '2026-10-22' },
     { id: 'hum',   name: '인문학으로 바라본 과학생활', short: '인문학',   exam: '2026-10-22' },
   ];
@@ -44,18 +44,20 @@
   const DB_LECTURES = ['CH1-A', 'CH1-B', 'CH2-A', 'CH3-A', 'CH3-B', 'CH3-C', 'CH3-D', 'CH3-E', 'CH3-F',
     'CH6-A', 'CH6-B', 'CH6-C', 'CH5-A', 'Normalization_A'];
 
-  const KIND_LABEL = { video: '영상강의', offline: '현장 복습', project: '실습·발표', custom: '추가 학습' };
+  const KIND_LABEL = { video: '영상강의', offline: '현장 복습', custom: '추가 학습' };
+  const VIDEO_LEN = 1.5;             // 온라인 영상 1개 재생시간(h)
+  const VIDEO_MULS = [1.5, 1.75, 2, 2.25, 2.5];
   const TYPE_ORDER = { carry: 0, skim: 1, cum: 2, task: 3, practice: 4, final: 5 };
 
   const DEFAULT_SETTINGS = {
     hours: { 0: 7, 1: 9, 2: 9, 3: 7, 4: 8, 5: 4, 6: 8 }, // 일~토
-    videoH: 1.5,
+    videoMul: 'auto',  // 영상 재생시간 대비 공부시간 배율. auto = 시험 전까지 다 들어가는 가장 큰 배율
     offlineH: 1,
     skimH: 0.25,
     cumH: 0.5,
     cycle: 7,
     examPenalty: 1.5,
-    classDays: { dm: null, linux: null, sat: null, sec: null, db: null, hum: null },
+    classDays: { dm: 1, linux: 1, sat: 3, db: 4, hum: 4 }, // 0=일 … 6=토
   };
 
   // ---------------------------------------------------------------- 날짜 유틸 (YYYY-MM-DD 문자열, UTC 계산)
@@ -95,15 +97,13 @@
     for (let w = 1; w <= 7; w++) {
       push('db', 'o', w, { kind: 'offline', week: w, title: `${w}주차 현장강의 복습·정리`, short: `${w}주차 현장` });
     }
-    push('sec', 'p', 1, { kind: 'project', title: '실습 내용·결과물 정리', short: '실습 정리', hours: 1.5 });
-    push('sec', 'p', 2, { kind: 'project', title: '발표 자료·예상 질문 정리', short: '발표 준비', hours: 1.5 });
     return T;
   }
 
   function freshState() {
     const today = realToday();
     return {
-      version: 1,
+      version: 2,
       settings: structuredClone(DEFAULT_SETTINGS),
       tasks: buildTasks(),
       schedule: {},
@@ -112,6 +112,7 @@
       memos: {},
       log: [],
       unplaced: [],
+      mulUsed: 2,
       currentDay: minKey(maxKey(today, PLAN_START), LAST_EXAM),
     };
   }
@@ -121,7 +122,7 @@
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const s = JSON.parse(raw);
-        if (s && s.version === 1 && Array.isArray(s.tasks)) {
+        if (s && s.version === 2 && Array.isArray(s.tasks)) {
           s.settings = { ...structuredClone(DEFAULT_SETTINGS), ...s.settings };
           s.settings.classDays = { ...DEFAULT_SETTINGS.classDays, ...s.settings.classDays };
           return s;
@@ -129,6 +130,19 @@
       }
     } catch (e) { /* 저장소 사용 불가 → 새 상태 */ }
     return null;
+  }
+  // v1 기록에서 완료 체크·개인 일정·메모만 가져온다 (과목 구성과 시간 단위가 바뀌어 스케줄은 새로 계산)
+  function migrateV1() {
+    try {
+      const old = JSON.parse(localStorage.getItem(OLD_KEY) || 'null');
+      if (!old || !Array.isArray(old.tasks)) return null;
+      const s = freshState();
+      const doneIds = new Set(old.tasks.filter(t => t.done).map(t => t.id));
+      s.tasks.forEach(t => { if (doneIds.has(t.id)) { t.done = true; t.doneOn = null; } });
+      s.events = (old.events || []).map(e => ({ id: e.id, date: e.date, time: e.time || '', text: e.text, mins: Math.round((Number(e.hours) || 0) * 60), done: !!e.done }));
+      s.memos = old.memos || {};
+      return s;
+    } catch (e) { return null; }
   }
   function save() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* 무시 */ }
@@ -138,7 +152,7 @@
 
   // ---------------------------------------------------------------- 도메인 헬퍼
   const taskById = id => state.tasks.find(t => t.id === id);
-  const hoursOf = t => t.hours ?? ({ video: state.settings.videoH, offline: state.settings.offlineH }[t.kind] ?? 1);
+  const hoursOf = t => t.hours ?? ({ video: VIDEO_LEN * state.mulUsed, offline: state.settings.offlineH }[t.kind] ?? 1);
   function classDate(subj, w) {
     const cd = state.settings.classDays[subj];
     if (cd === null || cd === undefined || cd === '') return null;
@@ -153,13 +167,24 @@
   }
   const examsOn = d => SUBJECTS.filter(s => s.exam === d);
   const eveSubjects = d => SUBJECTS.filter(s => s.exam === addDays(d, 1)).map(s => s.id);
-  const eventHours = d => state.events.filter(e => e.date === d).reduce((a, e) => a + (Number(e.hours) || 0), 0);
+  const eventHours = d => state.events.filter(e => e.date === d).reduce((a, e) => a + (Number(e.mins) || 0), 0) / 60;
   function capOf(d) {
     const st = state.settings;
     const base = Number(st.hours[weekday(d)]) || 0;
     return Math.max(0, base - eventHours(d) - st.examPenalty * examsOn(d).length);
   }
   const itemsOf = d => state.schedule[d] || [];
+  // 개인 일정 시간 표시: 15:00~15:30
+  function eventRange(e) {
+    const mins = Number(e.mins) || 0;
+    if (!e.time) return mins ? `${mins}분` : '종일';
+    if (!mins) return e.time;
+    const [hh, mm] = e.time.split(':').map(Number);
+    const end = hh * 60 + mm + mins;
+    const endTxt = `${pad(Math.floor(end / 60) % 24)}:${pad(end % 60)}`;
+    return `${e.time}~${endTxt}${end >= 1440 ? '(+1)' : ''}`;
+  }
+  const minsText = m => (m >= 60 ? `${Math.floor(m / 60)}시간${m % 60 ? ` ${m % 60}분` : ''}` : `${m}분`);
   const sumHours = arr => arr.reduce((a, it) => a + it.hours, 0);
 
   // 수업 요일이 지정된 과목: 영상강의를 수업 전날까지 끝내도록 마감일 계산
@@ -182,12 +207,34 @@
         if (!K) continue;
         vids.forEach((v, j) => { dues[v.id] = addDays(classes[Math.ceil((j + 1) * K / N) - 1], -1); });
       }
+      // 주차 순서대로 들어야 하므로, 뒤 강의의 마감은 앞 강의의 마감이기도 하다
+      let run = null;
+      for (let i = vids.length - 1; i >= 0; i--) {
+        const dv = dues[vids[i].id];
+        if (dv && (!run || dv < run)) run = dv;
+        if (run) dues[vids[i].id] = run;
+      }
     }
     return dues;
   }
 
   // ---------------------------------------------------------------- 스케줄 재계산 (핵심)
+  // 영상 배율이 'auto'면 2.5배부터 낮춰 가며 시험 전까지 모두 배정되는 가장 큰 배율을 고른다
   function replan(start) {
+    const pref = state.settings.videoMul;
+    if (pref !== 'auto') { state.mulUsed = Number(pref) || 2; replanCore(start); return; }
+    const snap = JSON.stringify({ schedule: state.schedule, carryPool: state.carryPool });
+    for (const m of [...VIDEO_MULS].reverse()) {
+      const o = JSON.parse(snap);
+      state.schedule = o.schedule;
+      state.carryPool = o.carryPool;
+      state.mulUsed = m;
+      replanCore(start);
+      if (!state.unplaced.length && !state.lateOnEve) return;
+    }
+  }
+
+  function replanCore(start) {
     const st = state.settings;
     // 1) start 이후: 완료 항목만 남기고 비움
     for (const k of Object.keys(state.schedule)) {
@@ -235,6 +282,7 @@
       return true;
     };
 
+    let lateOnEve = 0; // 시험 전날로 밀린 강의·복습 수 (총정리 시간을 잠식)
     // 지난 날에서 이월된 과제 표시용
     const carriedFrom = {};
     for (const [d, arr] of Object.entries(state.schedule)) {
@@ -312,7 +360,7 @@
           if (eve.length) {
             score = 1000 - SUBJECTS.findIndex(s => s.id === subj);
           } else if (due && due <= d) {
-            score = 500 + remainingOf(subj);
+            score = 500 + diffDays(due, d); // 마감이 더 지난 것부터
           } else {
             const examEve = addDays(SUBJ[subj].exam, -1);
             score = remainingOf(subj) / Math.max(capUntil(subj, d, examEve), 1);
@@ -329,6 +377,7 @@
         const pick = cands.find(c => hoursOf(c.t) <= cap - used + 0.25 + 1e-9);
         if (!pick) break;
         const t = pick.t;
+        if (eve.length) lateOnEve++;
         add({ id: `t-${t.id}`, type: 'task', taskId: t.id, subj: t.subj, kind: t.kind, title: t.title, hours: hoursOf(t), due: dues[t.id] || null, from: carriedFrom[t.id] || null });
         streams[pick.key].shift();
         (today[t.subj] ||= []).push(t);
@@ -368,6 +417,7 @@
     }
 
     // 4) 시험 전까지 배정하지 못한 항목
+    state.lateOnEve = lateOnEve;
     state.unplaced = [];
     for (const q of Object.values(streams)) q.forEach(t => state.unplaced.push({ subj: t.subj, title: t.title }));
     state.carryPool = state.carryPool.filter(c => !carryQ.includes(c));
@@ -446,6 +496,7 @@
   const clampBoard = d => minKey(maxKey(d, BOARD_START), BOARD_END);
 
   function renderAll() {
+    if ($('mulHint')) $('mulHint').textContent = `현재 적용: ${state.mulUsed}배 · 영상강의 1개 ${h(VIDEO_LEN * state.mulUsed)}`;
     renderKpis();
     renderAlerts();
     renderDay();
@@ -604,9 +655,8 @@
     $('eventList').innerHTML = evs.length ? evs.map(e => `
       <li class="${e.done ? 'done' : ''}">
         <input type="checkbox" data-ev="${esc(e.id)}" ${e.done ? 'checked' : ''} aria-label="완료">
-        <span class="ev-time">${e.time ? esc(e.time) : '종일'}</span>
+        <span class="ev-time">${esc(eventRange(e))}</span>
         <span class="ev-text">${esc(e.text)}</span>
-        <span class="hrs ev-hrs">${Number(e.hours) ? `−${h(Number(e.hours))}` : ''}</span>
         <button type="button" class="x-btn" data-evdel="${esc(e.id)}" aria-label="삭제">×</button>
       </li>`).join('') : '<li class="hint">등록된 개인 일정이 없습니다.</li>';
 
@@ -725,8 +775,11 @@
     const order = [1, 2, 3, 4, 5, 6, 0];
     $('wdGrid').innerHTML = order.map(w => `<label>${WD[w]}<input type="number" id="wd${w}" min="0" max="14" step="0.5" value="${st.hours[w]}"></label>`).join('');
     const opts = v => `<option value="">미지정</option>` + [1, 2, 3, 4, 5].map(w => `<option value="${w}" ${String(v) === String(w) ? 'selected' : ''}>${WD[w]}요일</option>`).join('');
-    $('classGrid').innerHTML = SUBJECTS.filter(s => s.id !== 'sec').map(s => `<label>${esc(s.name)}<select id="cd-${s.id}">${opts(st.classDays[s.id])}</select></label>`).join('');
-    $('sVideo').value = st.videoH;
+    $('classGrid').innerHTML = SUBJECTS.map(s => `<label>${esc(s.name)}<select id="cd-${s.id}">${opts(st.classDays[s.id])}</select></label>`).join('');
+    $('sMul').innerHTML = `<option value="auto">자동 (시험 전까지 들어가는 최대 배율)</option>` +
+      VIDEO_MULS.map(m => `<option value="${m}">${m}배 · 영상 1개 ${h(VIDEO_LEN * m)}</option>`).join('');
+    $('sMul').value = String(st.videoMul);
+    $('mulHint').textContent = `현재 적용: ${state.mulUsed}배 · 영상강의 1개 ${h(VIDEO_LEN * state.mulUsed)}`;
     $('sOffline').value = st.offlineH;
     $('sSkim').value = st.skimH;
     $('sCum').value = st.cumH;
@@ -798,13 +851,30 @@
       e.preventDefault();
       const text = $('evText').value.trim();
       if (!text) return;
-      const hours = Math.max(0, Number($('evHours').value) || 0);
-      state.events.push({ id: uid('e'), date: ui.selected, time: $('evTime').value, text, hours, done: false });
-      $('evText').value = ''; $('evHours').value = ''; $('evTime').value = '';
-      if (hours > 0 && ui.selected >= state.currentDay) {
-        replanFromToday(`${fmt(ui.selected)} 개인 일정 추가(−${h(hours)})`);
-        toast(`개인 일정 ${h(hours)}을 반영해 스케줄을 다시 계산했습니다.`);
+      const timeRaw = $('evTime').value.trim();
+      let time = '';
+      if (timeRaw) {
+        const m = /^(\d{1,2}):?(\d{2})$/.exec(timeRaw);
+        if (!m || Number(m[1]) > 23 || Number(m[2]) > 59) {
+          toast('시간은 00:00 ~ 23:59 형식으로 입력하세요. 예) 15:00');
+          $('evTime').focus();
+          return;
+        }
+        time = `${pad(Number(m[1]))}:${m[2]}`;
+      }
+      const mins = Math.max(0, Math.round(Number($('evMins').value) || 0));
+      const ev = { id: uid('e'), date: ui.selected, time, text, mins, done: false };
+      state.events.push(ev);
+      $('evText').value = ''; $('evMins').value = ''; $('evTime').value = '';
+      if (mins > 0 && ui.selected >= state.currentDay) {
+        replanFromToday(`${fmt(ui.selected)} 개인 일정 ${eventRange(ev)} 추가(공부 −${minsText(mins)})`);
+        toast(`${eventRange(ev)} 일정을 반영해 공부시간 ${minsText(mins)}을 빼고 다시 계산했습니다.`);
       } else { save(); renderAll(); }
+    });
+    // 시간 입력: 숫자만 받아 HH:MM 으로 자동 정리
+    $('evTime').addEventListener('input', e => {
+      const digits = e.target.value.replace(/\D/g, '').slice(0, 4);
+      e.target.value = digits.length > 2 ? `${digits.slice(0, 2)}:${digits.slice(2)}` : digits;
     });
     $('eventList').addEventListener('change', e => {
       const cb = e.target.closest('input[data-ev]');
@@ -817,7 +887,7 @@
       if (!b) return;
       const ev = state.events.find(x => x.id === b.dataset.evdel);
       state.events = state.events.filter(x => x.id !== b.dataset.evdel);
-      if (ev && Number(ev.hours) > 0 && ev.date >= state.currentDay) replanFromToday(`${fmt(ev.date)} 개인 일정 삭제`);
+      if (ev && Number(ev.mins) > 0 && ev.date >= state.currentDay) replanFromToday(`${fmt(ev.date)} 개인 일정 삭제`);
       else { save(); renderAll(); }
     });
 
@@ -875,7 +945,7 @@
       const num = (id, lo, hi, dflt) => { const v = Number($(id).value); return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt; };
       for (let w = 0; w < 7; w++) st.hours[w] = num(`wd${w}`, 0, 14, st.hours[w]);
       SUBJECTS.forEach(s => { const el = $(`cd-${s.id}`); if (el) st.classDays[s.id] = el.value === '' ? null : Number(el.value); });
-      st.videoH = num('sVideo', 0.25, 4, st.videoH);
+      st.videoMul = $('sMul').value === 'auto' ? 'auto' : Number($('sMul').value);
       st.offlineH = num('sOffline', 0.25, 4, st.offlineH);
       st.skimH = num('sSkim', 0, 1, st.skimH);
       st.cumH = num('sCum', 0, 3, st.cumH);
@@ -907,7 +977,7 @@
   // ---------------------------------------------------------------- 시작
   state = load();
   if (!state) {
-    state = freshState();
+    state = migrateV1() || freshState();
     replan(state.currentDay);
     save();
   }

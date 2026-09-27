@@ -47,12 +47,12 @@
         <div class="events">
           <div class="section-head">
             <h3>개인 일정</h3>
-            <span class="hint">소요시간을 넣으면 그날 공부 가능시간에서 빠지고 스케줄이 다시 계산됩니다.</span>
+            <span class="hint">시작 시간과 소요 분을 넣으면 ‘15:00~15:30’처럼 들어가고, 그만큼 공부 가능시간에서 빠져 스케줄이 다시 계산됩니다.</span>
           </div>
           <form id="eventForm" class="event-form" autocomplete="off">
-            <input id="evTime" type="time" aria-label="시간">
+            <input id="evTime" type="text" inputmode="numeric" maxlength="5" placeholder="--:--" pattern="[0-2]?[0-9]:?[0-5][0-9]" aria-label="시작 시간 (시:분)">
             <input id="evText" type="text" placeholder="예) 공모전 회의" aria-label="일정 내용" required>
-            <input id="evHours" type="number" min="0" max="12" step="0.5" placeholder="소요 h" aria-label="소요시간(시간)">
+            <label class="mins-field"><input id="evMins" type="number" min="0" max="720" step="5" placeholder="30" aria-label="소요 시간(분)"><span>분</span></label>
             <button type="submit" class="btn">추가</button>
           </form>
           <ul id="eventList" class="event-list"></ul>
@@ -117,7 +117,8 @@
             <fieldset>
               <legend>학습 단위 · 규칙</legend>
               <div class="rule-grid">
-                <label>영상강의 1개 <input id="sVideo" type="number" min="0.5" max="4" step="0.25"> h</label>
+                <label>영상강의 공부시간 (영상 1.5h 기준) <select id="sMul"></select></label>
+                <p class="hint" id="mulHint"></p>
                 <label>현장강의 복습 <input id="sOffline" type="number" min="0.25" max="4" step="0.25"> h</label>
                 <label>전날 내용 훑어보기 (항목당) <input id="sSkim" type="number" min="0" max="1" step="0.25"> h</label>
                 <label>누적 복습 (과목당) <input id="sCum" type="number" min="0" max="3" step="0.25"> h</label>
