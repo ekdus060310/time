@@ -2,6 +2,11 @@
 
 HTML · CSS · JavaScript만으로 만든 단일 페이지 스터디 플래너입니다. 빌드 과정 없이 `index.html`을 브라우저로 열면 바로 동작하고, 모든 기록은 브라우저 `localStorage`에 저장됩니다.
 
+## 바로 열기
+
+GitHub Pages로 배포하면 주소창에 **https://ekdus060310.github.io/time/** 을 입력해 바로 열 수 있습니다.
+(저장소 Settings → Pages → Source: Deploy from a branch → Branch: `claude/study-planner-spa-qyv47k`, 폴더 `/ (root)` → Save)
+
 ## 기능
 
 - **D-Day (우측 상단)**: 10/19 중간고사까지 남은 날과 시간을 1초마다 갱신합니다.
