@@ -144,9 +144,102 @@
       return s;
     } catch (e) { return null; }
   }
-  function save() {
+  // touch=false: 사용자가 바꾼 것이 없는 저장(첫 실행 등). 다른 기기의 기록을 덮어쓰지 않도록 시각을 남기지 않는다.
+  function save(touch = true) {
+    if (touch) state.savedAt = Date.now();
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* 무시 */ }
+    if (touch) cloud.schedule();
   }
+
+  // ---------------------------------------------------------------- 기기 간 동기화
+  // claude.ai에 올린 페이지에서는 로그인한 사람마다 비공개 문서 하나(data/users/<id>/planner)에 전체 상태를 저장한다.
+  // 그 밖의 환경(파일로 직접 열기 등)에서는 이 브라우저의 localStorage만 쓴다.
+  const cloud = {
+    ref: null,
+    status: 'local',   // local | connecting | synced | saving | error
+    timer: null,
+    writing: false,
+    again: false,
+    setStatus(st) {
+      this.status = st;
+      const el = document.getElementById('syncText');
+      if (!el) return;
+      const txt = {
+        local: '이 브라우저에만 저장',
+        connecting: '동기화 연결 중…',
+        synced: '모든 기기 동기화됨',
+        saving: '저장 중…',
+        error: '동기화 실패 · 이 브라우저에 저장됨',
+      }[st];
+      el.textContent = txt;
+      el.dataset.state = st;
+    },
+    schedule() {
+      if (!this.ref) return;
+      clearTimeout(this.timer);
+      this.setStatus('saving');
+      this.timer = setTimeout(() => this.flush(), 700);
+    },
+    async flush() {
+      if (!this.ref) return;
+      if (this.writing) { this.again = true; return; }
+      this.writing = true;
+      try {
+        await this.ref.set({ savedAt: state.savedAt || 0, state: JSON.stringify(state) });
+        this.setStatus('synced');
+      } catch (e) {
+        this.setStatus('error');
+        if (e && (e.code === 'invalid_argument' || e.code === 'revoked' || e.code === 'not_granted')) this.ref = null;
+      } finally {
+        this.writing = false;
+        if (this.again) { this.again = false; this.flush(); }
+      }
+    },
+    adopt(data) {
+      let remote;
+      try { remote = JSON.parse(data.state); } catch (e) { return false; }
+      if (!remote || remote.version !== 2 || !Array.isArray(remote.tasks)) return false;
+      state = remote;
+      state.settings = { ...structuredClone(DEFAULT_SETTINGS), ...state.settings };
+      state.settings.classDays = { ...DEFAULT_SETTINGS.classDays, ...state.settings.classDays };
+      save(false);
+      ui.selected = clampBoard(ui.selected || state.currentDay);
+      renderSettings();
+      renderAll();
+      return true;
+    },
+    async connect() {
+      if (!window.claude || typeof window.claude.use !== 'function') return;
+      this.setStatus('connecting');
+      try {
+        const [user, db] = await Promise.all([window.claude.use('user'), window.claude.use('db')]);
+        const id = user ? await user.id() : null;
+        if (!db || !id) { this.setStatus('local'); return; }
+        const ref = db.doc(`data/users/${id}/planner`);
+        const snap = await ref.get();
+        this.ref = ref;
+        const data = snap.exists ? snap.data() : null;
+        if (data && (data.savedAt || 0) > (state.savedAt || 0)) {
+          this.adopt(data);
+          this.setStatus('synced');
+          toast('다른 기기에서 저장한 기록을 불러왔습니다.');
+        } else {
+          await this.flush();
+        }
+        // 다른 기기에서 저장하면 실시간으로 반영
+        ref.onSnapshot(sn => {
+          if (!sn.exists || sn.metadata.hasPendingWrites) return;
+          const d = sn.data();
+          if ((d.savedAt || 0) > (state.savedAt || 0) && this.status !== 'saving') {
+            if (this.adopt(d)) toast('다른 기기의 변경 내용을 반영했습니다.');
+          }
+        }, () => this.setStatus('error'));
+      } catch (e) {
+        this.ref = null;
+        this.setStatus('error');
+      }
+    },
+  };
   let uidN = 0;
   const uid = p => `${p}${Date.now().toString(36)}${(uidN++).toString(36)}`;
 
@@ -979,7 +1072,7 @@
   if (!state) {
     state = migrateV1() || freshState();
     replan(state.currentDay);
-    save();
+    save(false);
   }
   ui.selected = clampBoard(state.currentDay);
   bind();
@@ -987,4 +1080,6 @@
   renderAll();
   tick();
   setInterval(tick, 1000);
+  cloud.setStatus('local');
+  cloud.connect();
 })();
