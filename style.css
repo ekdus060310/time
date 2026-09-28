@@ -345,6 +345,18 @@ button { cursor: pointer; }
   color: var(--ink-2);
   white-space: nowrap;
 }
+.mini-btn {
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  border-radius: 99px;
+  padding: 1px 9px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.mini-btn:hover { background: var(--accent); color: var(--accent-ink); }
+#sGaps { width: 84px; margin-left: auto; font-family: var(--mono); }
 .pill.carry { border-color: var(--warn-line); color: var(--warn); }
 .pill.final { border-color: var(--bad-line); color: var(--bad); }
 .pill.review { border-color: var(--accent); color: var(--accent-text); }

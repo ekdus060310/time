@@ -53,7 +53,9 @@
     hours: { 0: 7, 1: 9, 2: 9, 3: 7, 4: 8, 5: 4, 6: 8 }, // 일~토
     videoMul: 'auto',  // 영상 재생시간 대비 공부시간 배율. auto = 시험 전까지 다 들어가는 가장 큰 배율
     offlineH: 1,
-    skimH: 0.25,
+    skimH: 1 / 6,      // 1일 뒤 훑어보기 (항목당 10분)
+    spacedH: 1 / 12,   // 3·7일 뒤 재복습 (영상강의·추가 학습 항목당 5분)
+    gaps: [1, 3, 7],   // 학습 후 복습하는 날 (일)
     cumH: 0.5,
     cycle: 7,
     examPenalty: 1.5,
@@ -74,7 +76,12 @@
   const fmt = k => { const t = parseKey(k); return `${t.getUTCMonth() + 1}/${t.getUTCDate()}(${WD[t.getUTCDay()]})`; };
   const fmtShort = k => { const t = parseKey(k); return `${t.getUTCMonth() + 1}/${t.getUTCDate()}`; };
   const weekMon = w => addDays(WEEK1_MON, 7 * (w - 1));
-  const h = n => `${+n.toFixed(2)}h`;
+  const h = n => {
+    const m = Math.round(n * 60);
+    if (m > 0 && m < 60) return `${m}분`;
+    return m % 15 === 0 ? `${+(m / 60).toFixed(2)}h` : `${Math.floor(m / 60)}h ${m % 60}분`;
+  };
+  const round5m = n => Math.max(1, Math.round(n * 12)) / 12; // 5분 단위
   const roundQ = n => Math.round(n * 4) / 4;
 
   // ---------------------------------------------------------------- 상태
@@ -104,7 +111,7 @@
     const today = realToday();
     return {
       version: 2,
-      rev: 3,
+      rev: 4,
       settings: structuredClone(DEFAULT_SETTINGS),
       tasks: buildTasks(),
       schedule: {},
@@ -251,6 +258,11 @@
       if (t.week !== f.week || t.title !== f.title) { t.week = f.week; t.title = f.title; changed = true; }
     });
     if ((state.rev || 0) < 3) { state.rev = 3; changed = true; }
+    if (state.rev < 4) { // 간격 복습(1·3·7일) 도입: 복습 시간을 분 단위 기본값으로
+      state.rev = 4;
+      if (state.settings.skimH === 0.25) state.settings.skimH = DEFAULT_SETTINGS.skimH;
+      changed = true;
+    }
     return changed;
   }
   let uidN = 0;
@@ -331,7 +343,7 @@
     // 1) start 이후: 완료 항목만 남기고 비움
     for (const k of Object.keys(state.schedule)) {
       if (k >= start) {
-        state.schedule[k] = state.schedule[k].filter(it => it.done);
+        state.schedule[k] = state.schedule[k].filter(it => it.done || it.pinned);
         if (!state.schedule[k].length) delete state.schedule[k];
       }
     }
@@ -343,8 +355,10 @@
 
     // 3) 미완료 기본 과제 → 과목·스트림별 큐 (주차 순서 유지)
     const streams = {};
+    const kept = new Set(); // 당겨와서 오늘에 고정된 과제
+    for (const [k, arr] of Object.entries(state.schedule)) if (k >= start) arr.forEach(it => { if (it.type === 'task') kept.add(it.taskId); });
     [...state.tasks].sort((a, b) => a.seq - b.seq).forEach(t => {
-      if (t.done) return;
+      if (t.done || kept.has(t.id)) return;
       (streams[`${t.subj}|${t.stream}`] ||= []).push(t);
     });
     const dues = computeDues(start);
@@ -389,11 +403,17 @@
       arr.forEach(it => { if (it.type === 'task' && it.carried && !(carriedFrom[it.taskId] > d)) carriedFrom[it.taskId] = d; });
     }
 
-    // 전날 학습한 항목 (누적식 훑어보기 대상)
-    let prev = {};
-    itemsOf(addDays(start, -1)).forEach(it => {
-      if (it.type === 'task' && it.done) (prev[it.subj] ||= []).push(taskById(it.taskId));
-    });
+    // 날짜별로 공부한 항목 (간격 복습 대상): 지난 날은 완료한 것, 앞으로는 배치한 것
+    const learnedOn = {};
+    for (const [k, arr] of Object.entries(state.schedule)) {
+      if (k >= start) continue;
+      arr.forEach(it => {
+        if (it.type !== 'task' || !it.done) return;
+        const t = taskById(it.taskId);
+        if (t) ((learnedOn[k] ||= {})[it.subj] ||= []).push(t);
+      });
+    }
+    const gaps = [...new Set((st.gaps || []).map(Number).filter(g => g >= 1 && g <= 30))].sort((a, b) => a - b);
 
     for (let d = start; d <= LAST_EXAM; d = addDays(d, 1)) {
       const items = state.schedule[d] ? state.schedule[d] : [];
@@ -420,16 +440,22 @@
       }
 
       if (!eve.length) {
-        // (b) 누적식 진도: 전날 공부한 내용 훑어보기
-        for (const s of Object.keys(prev)) {
-          if (!allowed(s) || !prev[s].length || st.skimH <= 0) continue;
-          const list = prev[s];
-          add({
-            id: `skim-${s}-${d}`, type: 'skim', subj: s,
-            title: '어제 공부한 내용 훑어보기',
-            detail: list.map(t => t.short).join(', '),
-            hours: Math.min(0.75, roundQ(list.length * st.skimH)),
-          });
+        // (b) 간격 복습: 공부한 날로부터 1일(훑어보기)·3일·7일 뒤 다시 보기
+        for (const gap of gaps) {
+          const src = learnedOn[addDays(d, -gap)] || {};
+          const per = gap === 1 ? st.skimH : st.spacedH;
+          if (per <= 0) continue;
+          for (const s of Object.keys(src)) {
+            // 현장강의 복습은 그 자체가 복습이라 1일 뒤 훑어보기만 한다
+            const list = gap === 1 ? src[s] : src[s].filter(t => t.kind !== 'offline');
+            if (!allowed(s) || !list.length) continue;
+            add({
+              id: gap === 1 ? `skim-${s}-${d}` : `rev${gap}-${s}-${d}`, type: 'skim', gap, subj: s,
+              title: gap === 1 ? '어제 공부한 내용 훑어보기' : `${gap}일 전 공부한 내용 재복습`,
+              detail: `${fmtShort(addDays(d, -gap))} 학습 · ${list.map(t => t.short).join(', ')}`,
+              hours: Math.min(0.75, round5m(list.length * per)),
+            });
+          }
         }
         // (c) N일 주기 누적 복습
         if (st.cycle > 0 && st.cumH > 0 && (diffDays(PLAN_START, d) + 1) % st.cycle === 0) {
@@ -512,7 +538,7 @@
       }
 
       if (items.length) state.schedule[d] = items; else delete state.schedule[d];
-      prev = today;
+      learnedOn[d] = today;
     }
 
     // 4) 시험 전까지 배정하지 못한 항목
@@ -562,6 +588,40 @@
     save();
     renderAll();
     toast(msg);
+  }
+
+  // 다음 날 이후의 과제를 오늘(플랜일)로 당겨오고, 그 뒤 일정은 다시 계산한다.
+  // 오늘 이미 있던 항목은 그대로 두기 위해 모두 고정(pinned)한다.
+  function pullToToday(date, id, done = false) {
+    const cur = state.currentDay;
+    if (date <= cur || cur > LAST_EXAM) return false;
+    const arr = state.schedule[date] || [];
+    const i = arr.findIndex(x => x.id === id);
+    if (i < 0 || arr[i].type !== 'task') return false;
+    const [it] = arr.splice(i, 1);
+    if (!arr.length) delete state.schedule[date];
+    const todayItems = (state.schedule[cur] ||= []);
+    todayItems.forEach(x => { x.pinned = true; });
+    todayItems.push({ ...it, date: cur, pinned: true, done, pulledFrom: date, from: null, due: null });
+    if (done) {
+      const t = taskById(it.taskId);
+      if (t) { t.done = true; t.doneOn = cur; }
+    }
+    replan(cur);
+    state.log.unshift({ at: Date.now(), msg: `${SUBJ[it.subj].short} ‘${it.title}’ ${fmtShort(date)} → ${fmt(cur)}로 당김 · 이후 일정 재계산` });
+    state.log = state.log.slice(0, 20);
+    save();
+    renderAll();
+    toast(`${fmtShort(date)} 과제를 오늘로 당기고 이후 일정을 다시 계산했습니다.`);
+    return true;
+  }
+  // 오늘 이후 가장 가까운 날의 첫 과제
+  function nextPullable() {
+    for (let d = addDays(state.currentDay, 1); d <= LAST_EXAM; d = addDays(d, 1)) {
+      const it = itemsOf(d).find(x => x.type === 'task' && !x.done);
+      if (it) return { date: d, it };
+    }
+    return null;
   }
 
   function undo() {
@@ -662,7 +722,7 @@
   function typeLabel(it) {
     switch (it.type) {
       case 'task': return [KIND_LABEL[it.kind] || '학습', ''];
-      case 'skim': return ['훑어보기', 'review'];
+      case 'skim': return [it.gap > 1 ? `${it.gap}일 복습` : '훑어보기', 'review'];
       case 'cum': return ['누적 복습', 'review'];
       case 'carry': return ['복습', 'review'];
       case 'practice': return ['문제풀이', ''];
@@ -734,7 +794,10 @@
             const cid = `chk-${d}-${it.id}`;
             const status = it.carried ? '<span class="pill carry">다음 날로 이월됨</span>'
               : it.missed ? '<span class="pill late">미완료</span>'
-              : it.from ? `<span class="pill carry">${fmtShort(it.from)}에서 이월</span>` : '';
+              : it.from ? `<span class="pill carry">${fmtShort(it.from)}에서 이월</span>`
+              : it.pulledFrom ? `<span class="pill review">${fmtShort(it.pulledFrom)}에서 당김</span>` : '';
+            const pull = it.type === 'task' && !it.done && d > cur && cur <= LAST_EXAM
+              ? `<button type="button" class="mini-btn" data-pull="${esc(it.id)}" data-date="${d}">오늘 하기</button>` : '';
             return `<div class="item${it.done ? ' done' : ''}${it.carried ? ' carried' : ''}">
               <input type="checkbox" id="${esc(cid)}" data-date="${d}" data-id="${esc(it.id)}" ${it.done ? 'checked' : ''} ${closed ? 'disabled' : ''}>
               <label class="item-body" for="${esc(cid)}">
@@ -742,7 +805,7 @@
                 ${it.detail ? `<span class="item-detail">${esc(it.detail)}</span>` : ''}
                 ${it.due && !it.done && !closed ? `<span class="item-detail">수업 전 마감 ${fmt(it.due)}</span>` : ''}
               </label>
-              <span class="item-side">${status}${late ? '<span class="pill late">마감 지남</span>' : ''}<span class="pill ${cls}">${lab}</span><span class="hrs">${h(it.hours)}</span></span>
+              <span class="item-side">${pull}${status}${late ? '<span class="pill late">마감 지남</span>' : ''}<span class="pill ${cls}">${lab}</span><span class="hrs">${h(it.hours)}</span></span>
             </div>`;
           }).join('')}
         </div>`;
@@ -774,6 +837,10 @@
         : `<b>${fmt(cur)}</b> 항목을 모두 끝냈습니다. 누르면 하루를 마감하고 다음 날부터 다시 계산합니다.`;
     }
     $('undoBtn').hidden = !hasUndo();
+    const n = cur <= LAST_EXAM && curItems.length && !left.length ? nextPullable() : null;
+    const pb = $('pullBtn');
+    pb.hidden = !n;
+    if (n) pb.textContent = `내일 과제 당겨오기 (${fmtShort(n.date)} ${SUBJ[n.it.subj].short})`;
   }
 
   function renderBoard() {
@@ -801,7 +868,7 @@
       if (ex.length) tags.push(`<span class="cell-tag exam">시험 ${ex.map(s => esc(s.short)).join('·')}</span>`);
       if (eve.length) tags.push(`<span class="cell-tag eve">D-1 ${eve.map(s => esc(SUBJ[s].short)).join('·')} 올인</span>`);
       const chips = SUBJECTS.filter(s => bySubj[s.id]).map(s =>
-        `<span class="chip"><i class="dot" style="--c:${color(s.id)}"></i>${esc(s.short)}<b>${+bySubj[s.id].toFixed(2)}</b></span>`).join('');
+        `<span class="chip"><i class="dot" style="--c:${color(s.id)}"></i>${esc(s.short)}<b>${+bySubj[s.id].toFixed(1)}</b></span>`).join('');
       const doneN = items.filter(i => i.done).length;
       const carriedN = items.filter(i => i.carried).length;
       const foot = [];
@@ -811,7 +878,7 @@
       if (evN) foot.push(`<span>일정 ${evN}</span>`);
       const pct = cap ? Math.min(100, used / cap * 100) : 0;
       cells.push(`<button type="button" class="${cls.join(' ')}" data-day="${d}" aria-label="${fmt(d)} ${h(used)} 배정">
-        <span class="cell-top"><span class="cell-date">${fmtShort(d)}</span><span class="cell-cap">${d <= LAST_EXAM ? `${+used.toFixed(2)}/${+cap.toFixed(2)}h` : ''}</span></span>
+        <span class="cell-top"><span class="cell-date">${fmtShort(d)}</span><span class="cell-cap">${d <= LAST_EXAM ? `${+used.toFixed(1)}/${+cap.toFixed(1)}h` : ''}</span></span>
         ${tags.join('')}
         ${d <= LAST_EXAM ? `<span class="cell-bar"><i class="${pct >= 90 ? 'full' : ''}" style="width:${pct}%"></i></span>` : ''}
         <span class="chips">${chips}</span>
@@ -880,7 +947,9 @@
     $('sMul').value = String(st.videoMul);
     $('mulHint').textContent = `현재 적용: ${state.mulUsed}배 · 영상강의 1개 ${h(VIDEO_LEN * state.mulUsed)}`;
     $('sOffline').value = st.offlineH;
-    $('sSkim').value = st.skimH;
+    $('sSkim').value = Math.round(st.skimH * 60);
+    $('sSpaced').value = Math.round(st.spacedH * 60);
+    $('sGaps').value = (st.gaps || []).join(', ');
     $('sCum').value = st.cumH;
     $('sCycle').value = st.cycle;
     $('sPenalty').value = st.examPenalty;
@@ -937,6 +1006,11 @@
       if (!cb) return;
       const it = itemsOf(cb.dataset.date).find(x => x.id === cb.dataset.id);
       if (!it) return;
+      // 미리 끝낸 다음 날 과제 → 오늘 한 것으로 옮기고 이후 일정 재계산
+      if (cb.checked && it.type === 'task' && cb.dataset.date > state.currentDay && state.currentDay <= LAST_EXAM) {
+        pullToToday(cb.dataset.date, it.id, true);
+        return;
+      }
       it.done = cb.checked;
       if (it.type === 'task') {
         const t = taskById(it.taskId);
@@ -944,6 +1018,16 @@
       }
       save();
       renderAll();
+    });
+
+    $('checklist').addEventListener('click', e => {
+      const b = e.target.closest('[data-pull]');
+      if (!b) return;
+      pullToToday(b.dataset.date, b.dataset.pull);
+    });
+    $('pullBtn').addEventListener('click', () => {
+      const n = nextPullable();
+      if (n) pullToToday(n.date, n.it.id);
     });
 
     $('eventForm').addEventListener('submit', e => {
@@ -1046,7 +1130,10 @@
       SUBJECTS.forEach(s => { const el = $(`cd-${s.id}`); if (el) st.classDays[s.id] = el.value === '' ? null : Number(el.value); });
       st.videoMul = $('sMul').value === 'auto' ? 'auto' : Number($('sMul').value);
       st.offlineH = num('sOffline', 0.25, 4, st.offlineH);
-      st.skimH = num('sSkim', 0, 1, st.skimH);
+      st.skimH = num('sSkim', 0, 60, st.skimH * 60) / 60;
+      st.spacedH = num('sSpaced', 0, 60, st.spacedH * 60) / 60;
+      const g = $('sGaps').value.split(/[^0-9]+/).map(Number).filter(x => x >= 1 && x <= 30);
+      st.gaps = [...new Set(g)].sort((a, b) => a - b);
       st.cumH = num('sCum', 0, 3, st.cumH);
       st.cycle = Math.round(num('sCycle', 0, 14, st.cycle));
       st.examPenalty = num('sPenalty', 0, 6, st.examPenalty);
