@@ -324,21 +324,33 @@
 
   // ---------------------------------------------------------------- 스케줄 재계산 (핵심)
   // 영상 배율이 'auto'면 2.5배부터 낮춰 가며 시험 전까지 모두 배정되는 가장 큰 배율을 고른다
+  // 그래도 시험 전까지 다 들어가지 않으면 하루 가용시간을 15분씩 늘려(초과 배정) 모든 강의·복습을 넣는다
   function replan(start) {
     const pref = state.settings.videoMul;
-    if (pref !== 'auto') { state.mulUsed = Number(pref) || 2; replanCore(start); return; }
+    const muls = pref === 'auto' ? [...VIDEO_MULS].reverse() : [Number(pref) || 2];
     const snap = JSON.stringify({ schedule: state.schedule, carryPool: state.carryPool });
-    for (const m of [...VIDEO_MULS].reverse()) {
+    const run = (m, extra) => {
       const o = JSON.parse(snap);
       state.schedule = o.schedule;
       state.carryPool = o.carryPool;
       state.mulUsed = m;
-      replanCore(start);
-      if (!state.unplaced.length && !state.lateOnEve) return;
+      state.overflowH = extra;
+      replanCore(start, extra);
+    };
+    for (const m of muls) {
+      run(m, 0);
+      if (!state.unplaced.length && (!state.lateOnEve || pref !== 'auto')) return;
+    }
+    const m = muls[muls.length - 1];
+    for (const strict of [true, false]) {
+      for (let extra = 0.25; extra <= 6; extra += 0.25) {
+        run(m, extra);
+        if (!state.unplaced.length && (!strict || !state.lateOnEve)) return;
+      }
     }
   }
 
-  function replanCore(start) {
+  function replanCore(start, extra = 0) {
     const st = state.settings;
     // 1) start 이후: 완료 항목만 남기고 비움
     for (const k of Object.keys(state.schedule)) {
@@ -367,7 +379,11 @@
 
     // 가용시간 사전 계산
     const capMap = {}, eveMap = {};
-    for (let d = start; d <= LAST_EXAM; d = addDays(d, 1)) { capMap[d] = capOf(d); eveMap[d] = eveSubjects(d); }
+    for (let d = start; d <= LAST_EXAM; d = addDays(d, 1)) {
+      eveMap[d] = eveSubjects(d);
+      // 초과 배정은 새 진도를 하는 날에만 (시험 전날 총정리는 원래 가용시간)
+      capMap[d] = capOf(d) + (eveMap[d].length || d === LAST_EXAM ? 0 : extra);
+    }
     const capUntil = (subj, from, to) => {
       let sum = 0;
       for (let d = from; d < to && d <= LAST_EXAM; d = addDays(d, 1)) {
@@ -435,7 +451,7 @@
       for (let i = 0; i < carryQ.length; i++) {
         const c = carryQ[i];
         if (!allowed(c.subj)) continue;
-        add({ id: c.id, type: 'carry', subj: c.subj, title: c.title, detail: c.detail, hours: c.hours, from: c.from });
+        add({ id: c.id, type: 'carry', subj: c.subj, title: c.title, detail: c.detail, hours: c.hours, from: c.from, srcIds: c.srcIds, per: c.per });
         carryQ.splice(i--, 1);
       }
 
@@ -454,6 +470,7 @@
               title: gap === 1 ? '어제 공부한 내용 훑어보기' : `${gap}일 전 공부한 내용 재복습`,
               detail: `${fmtShort(addDays(d, -gap))} 학습 · ${list.map(t => t.short).join(', ')}`,
               hours: Math.min(0.75, round5m(list.length * per)),
+              srcIds: list.map(t => t.id), per,
             });
           }
         }
@@ -563,13 +580,20 @@
         if (it.done) continue;
         const alive = SUBJ[it.subj] && SUBJ[it.subj].exam > next;
         if (it.type === 'task' || it.type === 'skim' || it.type === 'cum' || it.type === 'carry') {
+          // 복습 대상 강의를 실제로 끝낸 경우에만 복습을 이월 (안 들은 강의의 복습은 버림 — 강의가 다시 배치되면 복습도 새로 생김)
+          let src = it.srcIds;
+          if (src) src = src.filter(id => taskById(id)?.done);
+          if (src && !src.length) { it.missed = true; continue; }
           it.carried = alive; it.missed = !alive;
           if (alive) { count++; hours += it.hours; }
           if (alive && it.type !== 'task') {
+            const shorts = src ? src.map(id => taskById(id).short).join(', ') : null;
             state.carryPool.push({
               id: uid('c'), subj: it.subj,
               title: it.type === 'carry' ? it.title : `${it.title} (${fmtShort(d)} 이월)`,
-              detail: it.detail, hours: it.hours, from: d,
+              detail: shorts ? it.detail.replace(/ · .*$/, ` · ${shorts}`) : it.detail,
+              hours: src && it.per ? Math.min(it.hours, round5m(src.length * it.per)) : it.hours,
+              srcIds: src || undefined, per: it.per, from: d,
             });
           }
         } else {
@@ -719,6 +743,9 @@
     if (state.currentDay <= LAST_EXAM && today > state.currentDay) {
       out.push(`<div class="alert warn"><span><b>날짜가 바뀌었습니다.</b> 기록을 확인한 뒤 ${fmt(state.currentDay)}의 미완료 항목을 ${fmt(today)}로 자동으로 옮깁니다.</span></div>`);
     }
+    if (state.overflowH > 0 && state.currentDay <= LAST_EXAM) {
+      out.push(`<div class="alert warn"><span><b>가용시간을 넘겨 배정했습니다.</b> 시험 전까지 모든 강의와 복습을 넣기 위해 하루 최대 ${h(state.overflowH)}씩 더 잡았습니다. 영상이 1.5h보다 짧으면 실제로는 덜 걸립니다.</span></div>`);
+    }
     if (state.unplaced.length) {
       const by = {};
       state.unplaced.forEach(u => { (by[u.subj] ||= []).push(u.title); });
@@ -779,7 +806,7 @@
     if (ex.length) notes.push(`시험 −${h(state.settings.examPenalty * ex.length)}`);
     $('dayMeter').innerHTML = items.length || cap ? `
       <div class="meter-row">
-        <span>배정 <b>${h(used)}</b> / 가용 <b>${h(cap)}</b>${notes.length ? ` <span class="hint">(${WD[weekday(d)]} ${h(base)} ${notes.join(' ')})</span>` : ''}</span>
+        <span>배정 <b>${h(used)}</b> / 가용 <b>${h(cap)}</b>${used > cap + 0.01 ? ` <span class="over">${h(used - cap)} 초과</span>` : ''}${notes.length ? ` <span class="hint">(${WD[weekday(d)]} ${h(base)} ${notes.join(' ')})</span>` : ''}</span>
         <span>완료 <b>${h(doneH)}</b></span>
       </div>
       <div class="stack">${segs}</div>` : '';
@@ -887,7 +914,7 @@
       if (evN) foot.push(`<span>일정 ${evN}</span>`);
       const pct = cap ? Math.min(100, used / cap * 100) : 0;
       cells.push(`<button type="button" class="${cls.join(' ')}" data-day="${d}" aria-label="${fmt(d)} ${h(used)} 배정">
-        <span class="cell-top"><span class="cell-date">${fmtShort(d)}</span><span class="cell-cap">${d <= LAST_EXAM ? `${+used.toFixed(1)}/${+cap.toFixed(1)}h` : ''}</span></span>
+        <span class="cell-top"><span class="cell-date">${fmtShort(d)}</span><span class="cell-cap${used > cap + 0.01 ? ' over' : ''}">${d <= LAST_EXAM ? `${+used.toFixed(1)}/${+cap.toFixed(1)}h` : ''}</span></span>
         ${tags.join('')}
         ${d <= LAST_EXAM ? `<span class="cell-bar"><i class="${pct >= 90 ? 'full' : ''}" style="width:${pct}%"></i></span>` : ''}
         <span class="chips">${chips}</span>
