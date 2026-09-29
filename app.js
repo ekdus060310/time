@@ -239,7 +239,7 @@
           if (!sn.exists || sn.metadata.hasPendingWrites) return;
           const d = sn.data();
           if ((d.savedAt || 0) > (state.savedAt || 0) && this.status !== 'saving') {
-            if (this.adopt(d)) toast('다른 기기의 변경 내용을 반영했습니다.');
+            if (this.adopt(d)) { toast('다른 기기의 변경 내용을 반영했습니다.'); autoRollover(); }
           }
         }, () => this.setStatus('error'));
       } catch (e) {
@@ -549,9 +549,10 @@
   }
 
   // ---------------------------------------------------------------- 하루 마감 + 재배치
-  function closeDayAndReplan() {
+  // auto=true: 자정이 지나 자동으로 마감 (어제까지의 미완료 항목을 오늘로 이월)
+  function closeDayAndReplan(auto = false) {
     const day = state.currentDay;
-    if (day > LAST_EXAM) { toast('시험 기간이 끝나 재배치할 일정이 없습니다.'); return; }
+    if (day > LAST_EXAM) { if (!auto) toast('시험 기간이 끝나 재배치할 일정이 없습니다.'); return; }
     try { localStorage.setItem(UNDO_KEY, JSON.stringify(state)); } catch (e) { /* 무시 */ }
     ui.undo = JSON.stringify(state);
 
@@ -579,15 +580,23 @@
     state.currentDay = minKey(next, addDays(LAST_EXAM, 1));
     replan(state.currentDay);
 
+    const head = auto ? `자정 자동 마감 · ${fmt(day)}` : `${fmt(day)} 마감`;
     const msg = count
-      ? `${fmt(day)} 마감 · 미완료 ${count}개(${h(hours)}) 이월 → ${fmt(state.currentDay)}부터 재계산`
-      : `${fmt(day)} 마감 · 모두 완료 → ${fmt(state.currentDay)}부터 재계산`;
+      ? `${head} · 미완료 ${count}개(${h(hours)}) 이월 → ${fmt(state.currentDay)}부터 재계산`
+      : `${head} · 모두 완료 → ${fmt(state.currentDay)}부터 재계산`;
     state.log.unshift({ at: Date.now(), msg: state.unplaced.length ? `${msg} (시험 전 미배정 ${state.unplaced.length}개)` : msg });
     state.log = state.log.slice(0, 20);
     ui.selected = clampBoard(state.currentDay);
     save();
     renderAll();
     toast(msg);
+  }
+
+  // 실제 날짜가 플랜일을 지났으면 자동 마감. 동기화가 있으면 다른 기기 기록을 먼저 받은 뒤에 한다.
+  let rolloverReady = false;
+  function autoRollover() {
+    if (!rolloverReady) return;
+    if (state.currentDay <= LAST_EXAM && realToday() > state.currentDay) closeDayAndReplan(true);
   }
 
   // 다음 날 이후의 과제를 오늘(플랜일)로 당겨오고, 그 뒤 일정은 다시 계산한다.
@@ -708,7 +717,7 @@
     const out = [];
     const today = realToday();
     if (state.currentDay <= LAST_EXAM && today > state.currentDay) {
-      out.push(`<div class="alert warn"><span><b>${fmt(state.currentDay)} 일과가 아직 마감되지 않았습니다.</b> 오늘은 ${fmt(today)}입니다. ‘미완료 과목 스케줄 재배치’를 누르면 남은 항목을 오늘부터 다시 배치합니다.</span></div>`);
+      out.push(`<div class="alert warn"><span><b>날짜가 바뀌었습니다.</b> 기록을 확인한 뒤 ${fmt(state.currentDay)}의 미완료 항목을 ${fmt(today)}로 자동으로 옮깁니다.</span></div>`);
     }
     if (state.unplaced.length) {
       const by = {};
@@ -833,8 +842,8 @@
     } else {
       btn.disabled = false;
       info.innerHTML = left.length
-        ? `<b>${fmt(cur)}</b> 미완료 <b>${left.length}개 (${h(sumHours(left))})</b>. 하루를 마치고 누르면 다음 날로 이월하고 요일별 가용시간·시험 전날 올인 규칙에 맞춰 ${fmt(LAST_EXAM)}까지 다시 계산합니다.`
-        : `<b>${fmt(cur)}</b> 항목을 모두 끝냈습니다. 누르면 하루를 마감하고 다음 날부터 다시 계산합니다.`;
+        ? `<b>${fmt(cur)}</b> 미완료 <b>${left.length}개 (${h(sumHours(left))})</b>. 자정(00:00)이 지나면 자동으로 다음 날로 이월하고 ${fmt(LAST_EXAM)}까지 다시 계산합니다. 일찍 마치려면 버튼을 누르세요.`
+        : `<b>${fmt(cur)}</b> 항목을 모두 끝냈습니다. 자정이 지나면 자동으로 다음 날로 넘어갑니다. 지금 마감하려면 버튼을 누르세요.`;
     }
     $('undoBtn').hidden = !hasUndo();
     const n = cur <= LAST_EXAM && curItems.length && !left.length ? nextPullable() : null;
@@ -975,7 +984,7 @@
     } else {
       $('ddayCount').textContent = n === 0 ? '시험 당일, 화이팅!' : '중간고사 진행/종료';
     }
-    if (today !== lastRealDay) { lastRealDay = today; renderAll(); }
+    if (today !== lastRealDay) { lastRealDay = today; autoRollover(); renderAll(); }
   }
 
   // ---------------------------------------------------------------- 토스트
@@ -1156,7 +1165,7 @@
       toast('초기 계획으로 되돌렸습니다.');
     });
 
-    $('rescheduleBtn').addEventListener('click', closeDayAndReplan);
+    $('rescheduleBtn').addEventListener('click', () => closeDayAndReplan(false));
     $('undoBtn').addEventListener('click', undo);
   }
 
@@ -1177,5 +1186,5 @@
   tick();
   setInterval(tick, 1000);
   cloud.setStatus('local');
-  cloud.connect();
+  cloud.connect().finally(() => { rolloverReady = true; autoRollover(); });
 })();
